@@ -49,10 +49,8 @@ export class TwilioPhoneProvider implements PhoneProvider {
           To: to,
           From: from,
           Url: webhookUrl,
-          StatusCallback: webhookUrl,  // Receive call status updates (answered, completed, etc.)
+          StatusCallback: webhookUrl,
           StatusCallbackEvent: 'initiated ringing answered completed',
-          MachineDetection: 'Enable',
-          MachineDetectionTimeout: '5',
         }).toString(),
       }
     );
@@ -106,20 +104,22 @@ export class TwilioPhoneProvider implements PhoneProvider {
     }
   }
 
-  /**
-   * Get TwiML response for connecting media stream
-   * This is called when Twilio requests the webhook URL after call is answered
-   */
-  getStreamConnectXml(streamUrl: string): string {
-    // <Connect><Stream> creates a bidirectional stream
-    // - Automatically receives only inbound audio (user's voice) for STT
-    // - Allows sending audio back via WebSocket media messages
-    // Note: "track" attribute is NOT valid for <Connect><Stream>, only for <Start><Stream>
+  private escapeXml(s: string): string {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  getStreamConnectXml(streamUrl: string, initialMessage?: string): string {
+    const voice = process.env.CALLME_TWIML_SAY_VOICE || 'Polly.Lea';
+    const language = process.env.CALLME_TWIML_SAY_LANGUAGE || 'fr-FR';
+    const sayBlock = initialMessage
+      ? `<Say voice="${voice}" language="${language}">${this.escapeXml(initialMessage)}</Say>`
+      : '';
     return `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${streamUrl}" />
-  </Connect>
-</Response>`;
+<Response>${sayBlock}<Connect><Stream url="${streamUrl}" /></Connect></Response>`;
   }
 }

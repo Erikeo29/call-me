@@ -33,9 +33,12 @@ export interface PhoneProvider {
   startStreaming(callControlId: string, streamUrl: string): Promise<void>;
 
   /**
-   * Get XML response for connecting media stream (used in webhooks)
+   * Get XML response for connecting media stream (used in webhooks).
+   * Optionally include an initial Say message played BEFORE the Stream
+   * (useful for Twilio Trial accounts where the WebSocket cannot reliably
+   * deliver outbound audio before the disclaimer keypress).
    */
-  getStreamConnectXml(streamUrl: string): string;
+  getStreamConnectXml(streamUrl: string, initialMessage?: string): string;
 }
 
 export interface PhoneConfig {

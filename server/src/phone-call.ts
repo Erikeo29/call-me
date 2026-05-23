@@ -27,6 +27,9 @@ interface CallState {
   startTime: number;
   hungUp: boolean;
   sttSession: RealtimeSTTSession | null;
+  dtmfReceived: boolean;  // Twilio Trial: user pressed a key to dismiss disclaimer
+  userEngaged: boolean;  // First inbound media OR dtmf received
+  pendingInitialMessage: string | null;  // Message à jouer via TwiML <Say> au 1er webhook
 }
 
 export interface ServerConfig {
@@ -175,10 +178,31 @@ export class CallManager {
             const msg = JSON.parse(msgBuffer.toString());
             const msgState = this.activeCalls.get(callId);
 
+            // Log tous les events non-media pour debug (start, stop, dtmf, mark, etc.)
+            if (msg.event && msg.event !== 'media') {
+              console.error(`[${callId}] WS event: ${msg.event} | ${JSON.stringify(msg).substring(0, 250)}`);
+            }
+
             // Capture streamSid from "start" event (required for sending audio back)
             if (msg.event === 'start' && msg.streamSid && msgState) {
               msgState.streamSid = msg.streamSid;
               console.error(`[${callId}] Captured streamSid: ${msg.streamSid}`);
+            }
+
+            // DTMF keypress (Twilio Trial: user dismisses disclaimer)
+            if (msg.event === 'dtmf' && msgState) {
+              console.error(`[${callId}] DTMF: ${JSON.stringify(msg.dtmf)}`);
+              msgState.dtmfReceived = true;
+              msgState.userEngaged = true;
+            }
+
+            // Premier event media inbound = user audible (engagement détecté)
+            if (msg.event === 'media' && msgState && !msgState.userEngaged) {
+              const track = msg.media?.track;
+              if (track === 'inbound' || track === 'inbound_track') {
+                console.error(`[${callId}] First inbound media chunk (user audible)`);
+                msgState.userEngaged = true;
+              }
             }
 
             // Handle "stop" event when call ends
@@ -348,22 +372,26 @@ export class CallManager {
       return;
     }
 
-    // For 'in-progress' or 'ringing' status, return TwiML to start media stream
-    // Include security token in the stream URL
+    // For 'in-progress' or 'ringing' status, return TwiML with optional Say + Stream
     let streamUrl = `wss://${new URL(this.config.publicUrl).host}/media-stream`;
+    let initialMessage: string | undefined;
 
-    // Find the call state to get the WebSocket token
     if (callSid) {
       const callId = this.callControlIdToCallId.get(callSid);
       if (callId) {
         const state = this.activeCalls.get(callId);
         if (state) {
           streamUrl += `?token=${encodeURIComponent(state.wsToken)}`;
+          if (state.pendingInitialMessage) {
+            initialMessage = state.pendingInitialMessage;
+            state.pendingInitialMessage = null;  // consume once (Twilio peut webhook plusieurs fois)
+            console.error(`[${callId}] TwiML initial Say: ${initialMessage.substring(0, 60)}...`);
+          }
         }
       }
     }
 
-    const xml = this.config.providers.phone.getStreamConnectXml(streamUrl);
+    const xml = this.config.providers.phone.getStreamConnectXml(streamUrl, initialMessage);
     res.writeHead(200, { 'Content-Type': 'application/xml' });
     res.end(xml);
   }
@@ -438,10 +466,11 @@ export class CallManager {
   async initiateCall(message: string): Promise<{ callId: string; response: string }> {
     const callId = `call-${++this.currentCallId}-${Date.now()}`;
 
-    // Create realtime transcription session via provider
+    // STT session: connect in background, don't block call initiation
     const sttSession = this.config.providers.stt.createSession();
-    await sttSession.connect();
-    console.error(`[${callId}] STT session connected`);
+    sttSession.connect().catch((e: any) => {
+      console.error(`[${callId}] STT connect failed (non-blocking): ${e.message}`);
+    });
 
     // Generate secure token for WebSocket authentication
     const wsToken = generateWebSocketToken();
@@ -458,6 +487,9 @@ export class CallManager {
       startTime: Date.now(),
       hungUp: false,
       sttSession,
+      dtmfReceived: false,
+      userEngaged: false,
+      pendingInitialMessage: message,  // Sera consommé par handleTwilioWebhook
     };
 
     this.activeCalls.set(callId, state);
@@ -475,20 +507,11 @@ export class CallManager {
 
       console.error(`Call initiated: ${callControlId} -> ${this.config.userPhoneNumber}`);
 
-      // Start TTS generation in parallel with waiting for connection
-      // This reduces latency by generating audio while Twilio establishes the stream
-      const ttsPromise = this.generateTTSAudio(message);
-
-      await this.waitForConnection(callId, 15000);
-
-      // Send the pre-generated audio and listen for response
-      const audioData = await ttsPromise;
-      await this.sendPreGeneratedAudio(state, audioData);
-      const response = await this.listen(state);
+      // Message initial joué via TwiML <Say> dans handleTwilioWebhook
+      // (robuste contre Twilio Trial disclaimer timing)
       state.conversationHistory.push({ speaker: 'claude', message });
-      state.conversationHistory.push({ speaker: 'user', message: response });
 
-      return { callId, response };
+      return { callId, response: 'Appel lancé - décroche ton téléphone !' };
     } catch (error) {
       state.sttSession?.close();
       this.activeCalls.delete(callId);

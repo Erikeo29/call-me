@@ -1,3 +1,8 @@
+---
+name: phone-input
+description: Call the user on the phone for real-time voice conversations. Use this when you need input, want to report on completed work, or need to discuss next steps.
+---
+
 # Phone Call Input Skill
 
 ## Description
